@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Temperature Monitor Dashboard</title>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+
+  <style>
+    /* ── Reset & base ─────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:            #f4f6f0; /* Soft Warm Cream / Off-White */
+      --surface:       #eaede1; /* Light Sage Tint */
+      --card:          #ffffff; /* Crisp White Cards */
+      --border:        #d2d9c3; /* Soft Olive-Gray Border */
+      --accent:        #556b2f; /* Dark Olive Green */
+      --accent2:       #8fbc8f; /* Dark Sea Green / Sage */
+      --warn:          #b8860b; /* Dark Goldenrod */
+      --danger:        #bc4747; /* Muted Red */
+      --text:          #2f3524; /* Deep Forest/Olive Charcoal */
+      --muted:         #6b755c; /* Muted Sage Gray */
+      --radius:        14px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      padding: 24px 20px 40px;
+    }
+
+    /* ── Header ───────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 28px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .logo { display: flex; align-items: center; gap: 14px; }
+    .logo-icon {
+      width: 44px; height: 44px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+    }
+    h1 { font-size: 20px; font-weight: 600; letter-spacing: -.3px; color: var(--text); }
+    h1 span { color: var(--accent); }
+    .subtitle { font-size: 13px; color: var(--muted); margin-top: 2px; }
+
+    /* connection pill */
+    #conn-pill {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 16px;
+      border-radius: 999px;
+      font-size: 13px; font-weight: 500;
+      background: var(--card);
+      border: 1px solid var(--border);
+      transition: all .3s;
+    }
+    #conn-dot {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: var(--muted);
+      transition: background .3s;
+    }
+    #conn-pill.connected    #conn-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+    #conn-pill.disconnected #conn-dot { background: var(--danger); }
+
+    /* ── Grid layout ──────────────────────────────────────── */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    /* ── Stat card ────────────────────────────────────────── */
+    .stat-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 22px 20px 18px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 2px 4px rgba(85, 107, 47, 0.04);
+    }
+    .stat-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 4px;
+      background: var(--accent-color, var(--accent));
+      border-radius: var(--radius) var(--radius) 0 0;
+    }
+    .stat-label {
+      font-size: 12px; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .8px;
+      margin-bottom: 10px;
+    }
+    .stat-value {
+      font-size: 36px; font-weight: 700;
+      line-height: 1;
+      color: var(--text);
+      transition: color 0.5s ease, opacity 0.3s ease;
+    }
+    .stat-unit { font-size: 16px; font-weight: 400; color: var(--muted); margin-left: 4px; }
+    .stat-sub  { font-size: 12px; color: var(--muted); margin-top: 8px; transition: color 0.3s ease; }
+
+    /* temp card glow animation when value updates */
+    @keyframes pulse-glow {
+      0%   { box-shadow: 0 0 0 0 rgba(85,107,47,.3); }
+      70%  { box-shadow: 0 0 0 12px rgba(85,107,47,0); }
+      100% { box-shadow: 0 0 0 0 rgba(85,107,47,0); }
+    }
+    .stat-card.flash { animation: pulse-glow .7s ease-out; }
+
+    /* ── Chart card ───────────────────────────────────────── */
+    .chart-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(85, 107, 47, 0.04);
+    }
+    .chart-title {
+      font-size: 14px; font-weight: 600;
+      color: var(--text);
+      margin-bottom: 16px;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .chart-wrap { position: relative; height: 200px; }
+
+    /* ── Log table ────────────────────────────────────────── */
+    .log-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      box-shadow: 0 2px 4px rgba(85, 107, 47, 0.04);
+    }
+    .log-title {
+      font-size: 14px; font-weight: 600;
+      color: var(--text);
+      margin-bottom: 14px;
+      display: flex; justify-content: space-between;
+    }
+    .log-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .log-table th {
+      text-align: left; padding: 10px;
+      color: var(--muted); font-weight: 600;
+      border-bottom: 2px solid var(--border);
+      background: var(--bg);
+    }
+    .log-table td { padding: 10px; border-bottom: 1px solid var(--border); }
+    .log-table tr:last-child td { border-bottom: none; }
+    .log-table tr:hover td { background: rgba(85,107,47,.04); }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px; font-weight: 600;
+    }
+    .badge-ok     { background: rgba(143,188,143,.25); color: var(--accent); }
+    .badge-warn   { background: rgba(184,134,11,.15);  color: var(--warn); }
+    .badge-danger { background: rgba(188,71,71,.15);   color: var(--danger); }
+
+    /* MQTT config panel */
+    .config-panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(85, 107, 47, 0.04);
+    }
+    .config-panel h3 { font-size: 14px; color: var(--text); margin-bottom: 14px; }
+    .config-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+    .config-field { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 140px; }
+    .config-field label { font-size: 12px; color: var(--muted); }
+    .config-field input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 13px;
+      padding: 8px 12px;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .config-field input:focus { border-color: var(--accent); background: #fff; }
+    .btn {
+      padding: 9px 20px;
+      border-radius: 8px;
+      font-size: 13px; font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity .2s, transform .1s;
+    }
+    .btn:active { transform: scale(.97); }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-danger  { background: var(--danger); color: #fff; }
+    .btn:hover   { opacity: .88; }
+
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 32px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">🌡️</div>
+    <div>
+      <h1>Temp<span>Monitor</span></h1>
+      <div class="subtitle">Mugisha Ineza Nora — Live Dashboard</div>
+    </div>
+  </div>
+  <div id="conn-pill" class="disconnected">
+    <div id="conn-dot"></div>
+    <span id="conn-text">Disconnected</span>
+  </div>
+</header>
+
+<div class="config-panel">
+  <h3>⚙ MQTT Connection</h3>
+  <div class="config-row">
+    <div class="config-field">
+      <label>Broker IP / Host</label>
+      <input id="cfg-host" type="text" value="157.173.101.159" />
+    </div>
+    <div class="config-field" style="max-width:90px;">
+      <label>WebSocket Port</label>
+      <input id="cfg-port" type="number" value="9001" />
+    </div>
+    <div class="config-field">
+      <label>Topic</label>
+      <input id="cfg-topic" type="text" value="exam/temperature" />
+    </div>
+    <div class="config-field" style="max-width:130px;">
+      <label>Username (optional)</label>
+      <input id="cfg-user" type="text" placeholder="none" />
+    </div>
+    <button class="btn btn-primary" onclick="mqttConnect()">Connect</button>
+    <button class="btn btn-danger"  onclick="mqttDisconnect()">Disconnect</button>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="stat-card" id="card-temp" style="--accent-color: #556b2f;">
+    <div class="stat-label">Temperature</div>
+    <div class="stat-value" style="color: var(--accent);"><span id="val-temp">--</span><span class="stat-unit">°C</span></div>
+    <div class="stat-sub" id="sub-temp">Waiting for data…</div>
+  </div>
+
+  <div class="stat-card" id="card-hum" style="--accent-color: #8fbc8f;">
+    <div class="stat-label">Humidity</div>
+    <div class="stat-value" style="color: #608c60;"><span id="val-hum">--</span><span class="stat-unit">%</span></div>
+    <div class="stat-sub" id="sub-hum">Waiting for data…</div>
+  </div>
+
+  <div class="stat-card" style="--accent-color: #b8860b;">
+    <div class="stat-label">Min / Max (session)</div>
+    <div class="stat-value" style="font-size:24px; color: var(--warn);">
+      <span id="val-min">--</span>
+      <span class="stat-unit"> / </span>
+      <span id="val-max">--</span>
+    </div>
+    <div class="stat-sub">°C since page load</div>
+  </div>
+
+  <div class="stat-card" style="--accent-color: #7a6b58;">
+    <div class="stat-label">Total readings</div>
+    <div class="stat-value" style="color:#7a6b58;" id="val-count">0</div>
+    <div class="stat-sub" id="sub-last">Last update: —</div>
+  </div>
+</div>
+
+<div class="chart-card">
+  <div class="chart-title">
+    <span>📈 Temperature over time</span>
+    <span id="chart-points" style="font-size:12px; font-weight:400;">0 points</span>
+  </div>
+  <div class="chart-wrap">
+    <canvas id="tempChart"></canvas>
+  </div>
+</div>
+
+<div class="log-card">
+  <div class="log-title">
+    <span>📋 Recent readings</span>
+    <button class="btn btn-danger" style="padding:5px 12px; font-size:12px;" onclick="clearLog()">Clear</button>
+  </div>
+  <table class="log-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Time</th>
+        <th>Temperature</th>
+        <th>Humidity</th>
+        <th>Status</th>
+        <th>Raw payload</th>
+      </tr>
+    </thead>
+    <tbody id="log-body">
+      <tr><td colspan="6" style="color:var(--muted); text-align:center; padding:24px;">
+        No data yet — connect to MQTT broker above
+      </td></tr>
+    </tbody>
+  </table>
+</div>
+
+<footer>
+  Embedded Systems Practical Exam — Mugisha Ineza Nora &nbsp;|&nbsp;
+  MQTT topic: <code>exam/temperature</code> &nbsp;|&nbsp;
+  Broker: 157.173.101.159
+</footer>
+
+<script>
+// ── State ────────────────────────────────────────────────────
+let mqttClient = null;
+let readings   = [];
+let tempMin    = Infinity;
+let tempMax    = -Infinity;
+const MAX_CHART = 40;
+const MAX_LOG   = 50;
+
+// ── Chart.js setup ───────────────────────────────────────────
+const ctx = document.getElementById('tempChart').getContext('2d');
+const tempChart = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [{
+      label: 'Temperature °C',
+      data: [],
+      borderColor: '#556b2f',
+      backgroundColor: 'rgba(85, 107, 47, 0.08)',
+      pointBackgroundColor: '#556b2f',
+      pointRadius: 3,
+      tension: 0.4,
+      fill: true,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 400 },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: '#ffffff',
+        borderColor: '#d2d9c3',
+        borderWidth: 1,
+        titleColor: '#6b755c',
+        bodyColor: '#2f3524',
+        callbacks: {
+          label: ctx => ` ${ctx.parsed.y.toFixed(1)} °C`
+        }
+      }
+    },
+    scales: {
+      x: {
+        ticks: { color: '#6b755c', font: { size: 11 }, maxTicksLimit: 8 },
+        grid:  { color: 'rgba(210, 217, 195, 0.5)' }
+      },
+      y: {
+        ticks: { color: '#6b755c', font: { size: 11 },
+                 callback: v => v.toFixed(1) + '°' },
+        grid:  { color: 'rgba(210, 217, 195, 0.5)' }
+      }
+    }
+  }
+});
+
+// ── MQTT helpers ─────────────────────────────────────────────
+function setConnStatus(state, label) {
+  const pill = document.getElementById('conn-pill');
+  pill.className = state;
+  document.getElementById('conn-text').textContent = label;
+}
+
+function mqttConnect() {
+  const host  = document.getElementById('cfg-host').value.trim();
+  const port  = parseInt(document.getElementById('cfg-port').value);
+  const topic = document.getElementById('cfg-topic').value.trim();
+  const user  = document.getElementById('cfg-user').value.trim();
+
+  if (mqttClient && mqttClient.isConnected()) mqttClient.disconnect();
+
+  const clientId = 'dashboard_' + Math.random().toString(16).slice(2, 8);
+  mqttClient = new Paho.Client(host, port, clientId);
+
+  mqttClient.onConnectionLost = (r) => {
+    setConnStatus('disconnected', 'Disconnected');
+    if (r.errorCode !== 0)
+      console.warn('[MQTT] Connection lost:', r.errorMessage);
+  };
+
+  mqttClient.onMessageArrived = (msg) => {
+    handleMessage(msg.destinationName, msg.payloadString);
+  };
+
+  const opts = {
+    useSSL: false,
+    timeout: 5,
+    keepAliveInterval: 30,
+    onSuccess: () => {
+      setConnStatus('connected', `Connected — ${host}`);
+      mqttClient.subscribe(topic, { qos: 1 });
+      console.log('[MQTT] Subscribed to', topic);
+    },
+    onFailure: (e) => {
+      setConnStatus('disconnected', 'Connection failed');
+      alert(`MQTT connection failed:\n${e.errorMessage}\n\nMake sure Mosquitto WebSocket port ${port} is open on the VPS.`);
+    }
+  };
+
+  if (user) { opts.userName = user; }
+
+  setConnStatus('disconnected', 'Connecting…');
+  mqttClient.connect(opts);
+}
+
+function mqttDisconnect() {
+  if (mqttClient && mqttClient.isConnected()) mqttClient.disconnect();
+  setConnStatus('disconnected', 'Disconnected');
+}
+
+// ── Incoming data ────────────────────────────────────────────
+// Handles both the correct JSON payload from monitor.py AND a stray
+// plain-number payload (e.g. "23.0") without ever showing NaN.
+function handleMessage(topic, raw) {
+  let temp, hum = 0, ts;
+
+  try {
+    const data = JSON.parse(raw);
+    temp = parseFloat(data.temperature);
+    hum  = parseInt(data.humidity ?? 0);
+    ts   = data.timestamp || new Date().toLocaleTimeString();
+  } catch (e) {
+    // plain number payload like "23.0"
+    temp = parseFloat(raw);
+    if (isNaN(temp)) {
+      console.warn("Invalid payload:", raw);
+      return;
+    }
+    hum = 0;
+    ts = new Date().toLocaleTimeString();
+  }
+
+  const num = readings.length + 1;
+  readings.push({ num, ts, temp, hum, raw });
+
+  // Update min/max
+  if (temp < tempMin) tempMin = temp;
+  if (temp > tempMax) tempMax = temp;
+
+  // ── Stat cards ──
+  document.getElementById('val-temp').textContent = temp.toFixed(1);
+  document.getElementById('val-hum').textContent = hum;
+  document.getElementById('val-min').textContent = tempMin.toFixed(1);
+  document.getElementById('val-max').textContent = tempMax.toFixed(1);
+  document.getElementById('val-count').textContent = num;
+  document.getElementById('sub-last').textContent = 'Last update: ' + ts;
+
+  // comfort hint on temp card
+  let hint = '✅ Comfortable';
+  if (temp > 35) hint = '🔴 Very hot';
+  else if (temp > 30) hint = '🟠 Hot';
+  else if (temp < 18) hint = '🔵 Cold';
+  document.getElementById('sub-temp').textContent = hint + '  •  ' + ts;
+  document.getElementById('sub-hum').textContent  =
+    (hum > 70 ? '💧 High' : hum < 30 ? '🌵 Low' : '✅ OK') + '  •  ' + ts;
+
+  // flash animation
+  ['card-temp','card-hum'].forEach(id => {
+    const el = document.getElementById(id);
+    el.classList.remove('flash');
+    void el.offsetWidth;
+    el.classList.add('flash');
+  });
+
+  // ── Chart ──
+  const labels = tempChart.data.labels;
+  const vals   = tempChart.data.datasets[0].data;
+  labels.push(ts);
+  vals.push(temp);
+  if (labels.length > MAX_CHART) { labels.shift(); vals.shift(); }
+  tempChart.update('none');
+  document.getElementById('chart-points').textContent = labels.length + ' points';
+
+  // ── Log table ──
+  const tbody = document.getElementById('log-body');
+  const status =
+    temp > 35 ? '<span class="badge badge-danger">Hot</span>' :
+    temp > 30 ? '<span class="badge badge-warn">Warm</span>' :
+                '<span class="badge badge-ok">Normal</span>';
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td>${num}</td>
+    <td>${ts}</td>
+    <td><strong>${temp.toFixed(1)} °C</strong></td>
+    <td>${hum} %</td>
+    <td>${status}</td>
+    <td style="font-family:monospace; font-size:11px; color:var(--muted);">${raw.slice(0,60)}</td>
+  `;
+  if (tbody.firstChild && tbody.firstChild.colSpan) tbody.innerHTML = '';
+  tbody.insertBefore(tr, tbody.firstChild);  // newest on top
+  if (tbody.children.length > MAX_LOG) tbody.removeChild(tbody.lastChild);
+}
+
+function clearLog() {
+  document.getElementById('log-body').innerHTML =
+    '<tr><td colspan="6" style="color:var(--muted); text-align:center; padding:24px;">Log cleared</td></tr>';
+  readings = [];
+  tempMin = Infinity; tempMax = -Infinity;
+  tempChart.data.labels = [];
+  tempChart.data.datasets[0].data = [];
+  tempChart.update();
+  document.getElementById('val-count').textContent = '0';
+  document.getElementById('val-temp').textContent = '--';
+  document.getElementById('val-hum').textContent  = '--';
+  document.getElementById('val-min').textContent = '--';
+  document.getElementById('val-max').textContent = '--';
+}
+
+// Auto-connect on load
+window.addEventListener('load', () => mqttConnect());
+</script>
+</body>
+</html>
